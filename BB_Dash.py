@@ -143,7 +143,6 @@ with tab1:
 
             if new_val != val:
                 update_switch(store, i, int(new_val))
-                st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -192,7 +191,6 @@ with tab2:
 
             if new_val != val:
                 update_consumption(store, i, new_val)
-                st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -211,17 +209,14 @@ with tab3:
         stores_text = st.text_area("Stores (one per line)", "\n".join(STORES))
         if st.button("Save Stores"):
             set_config("stores", stores_text.split("\n"))
-            st.rerun()
 
         suppliers_text = st.text_area("Suppliers (columns)", "\n".join(SUPPLIER_LABELS))
         if st.button("Save Suppliers"):
             set_config("suppliers", suppliers_text.split("\n"))
-            st.rerun()
 
         items_text = st.text_area("Items", "\n".join(ITEM_LABELS))
         if st.button("Save Items"):
             set_config("items", items_text.split("\n"))
-            st.rerun()
 
     else:
         st.warning("Enter admin password")

@@ -30,7 +30,7 @@ def set_config(key, value):
     supabase.table("config").upsert({"key": key, "value": value}).execute()
 
 # ============================
-# GLOBAL LAST UPDATE
+# LAST UPDATE (GLOBAL)
 # ============================
 
 def set_last_update(store):
@@ -100,10 +100,11 @@ def update_consumption(store, i, val):
     set_last_update(store)
 
 # ============================
-# AUTO SAVE (FIXED)
+# AUTO SAVE
 # ============================
 
 def auto_save(buffer, pivot, update_fn):
+
     changed = False
 
     for (store,i), v in buffer.items():
@@ -114,14 +115,12 @@ def auto_save(buffer, pivot, update_fn):
                 changed = True
                 break
 
-    # Start timer only once
     if changed and "timer" not in st.session_state:
         st.session_state.timer = time.time()
 
     if changed:
         st.warning("⚠️ Unsaved changes...")
 
-    # Auto-save after delay
     if changed and time.time() - st.session_state.timer > 2:
 
         with st.spinner("🔄 Saving..."):
@@ -142,10 +141,11 @@ st.title("🟠 BB Dashboard")
 tab1, tab2, tab3 = st.tabs(["🏭 Suppliers","📦 Consumption","⚙️ Admin"])
 
 # ============================
-# TAB 1
+# TAB 1: SUPPLIERS
 # ============================
 
 with tab1:
+
     df = get_supplier()
     pivot = df.pivot(index="store", columns="supplier", values="state") if not df.empty else pd.DataFrame()
     pivot = pivot.reindex(columns=range(len(SUPPLIERS)), fill_value=0)
@@ -153,28 +153,43 @@ with tab1:
     if "sup_buf" not in st.session_state:
         st.session_state.sup_buf = {}
 
+    # ✅ HEADER
+    header = st.columns(len(SUPPLIERS)+1)
+    header[0].write("Store")
+
+    for i, label in enumerate(SUPPLIERS):
+        header[i+1].write(label)
+
+    # ✅ TABLE
     for store in STORES:
         cols = st.columns(len(SUPPLIERS)+1)
         cols[0].write(store)
 
         for i in range(len(SUPPLIERS)):
             val = bool(pivot.loc[store,i]) if store in pivot.index else False
-            new = cols[i+1].checkbox(f"{store}_{i}", value=val)
+
+            new = cols[i+1].checkbox(
+                f"sup_{store}_{i}",
+                value=val,
+                label_visibility="collapsed"
+            )
+
             st.session_state.sup_buf[(store,i)] = int(new)
 
     auto_save(st.session_state.sup_buf, pivot, update_supplier)
 
-    # ✅ SINGLE GLOBAL LABEL
+    # ✅ GLOBAL LABEL
     last = get_last_update()
     if last:
         t = datetime.fromisoformat(last["time"])
         st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
-# TAB 2
+# TAB 2: CONSUMPTION
 # ============================
 
 with tab2:
+
     df = get_consumption()
     pivot = df.pivot(index="store", columns="item", values="percent") if not df.empty else pd.DataFrame()
     pivot = pivot.reindex(columns=range(len(ITEMS)), fill_value=0)
@@ -182,25 +197,39 @@ with tab2:
     if "con_buf" not in st.session_state:
         st.session_state.con_buf = {}
 
+    # ✅ HEADER
+    header = st.columns(len(ITEMS)+1)
+    header[0].write("Store")
+
+    for i, label in enumerate(ITEMS):
+        header[i+1].write(f"{label} (%)")
+
+    # ✅ TABLE
     for store in STORES:
         cols = st.columns(len(ITEMS)+1)
         cols[0].write(store)
 
         for i in range(len(ITEMS)):
             val = int(pivot.loc[store,i]) if store in pivot.index else 0
-            new = cols[i+1].number_input(f"{store}_{i}", 0,100,val)
+
+            new = cols[i+1].number_input(
+                f"con_{store}_{i}",
+                0,100,val,
+                label_visibility="collapsed"
+            )
+
             st.session_state.con_buf[(store,i)] = int(new)
 
     auto_save(st.session_state.con_buf, pivot, update_consumption)
 
-    # ✅ SAME GLOBAL LABEL
+    # ✅ GLOBAL LABEL
     last = get_last_update()
     if last:
         t = datetime.fromisoformat(last["time"])
         st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
-# ADMIN
+# TAB 3: ADMIN
 # ============================
 
 with tab3:
@@ -208,3 +237,15 @@ with tab3:
 
     if pw == "admin123":
         st.success("Access granted")
+
+        stores_text = st.text_area("Stores", "\n".join(STORES))
+        if st.button("Save Stores"):
+            set_config("stores", stores_text.split("\n"))
+
+        suppliers_text = st.text_area("Suppliers", "\n".join(SUPPLIERS))
+        if st.button("Save Suppliers"):
+            set_config("suppliers", suppliers_text.split("\n"))
+
+        items_text = st.text_area("Items", "\n".join(ITEMS))
+        if st.button("Save Items"):
+            set_config("items", items_text.split("\n"))

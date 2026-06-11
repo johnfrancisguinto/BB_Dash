@@ -180,10 +180,12 @@ with tab1:
         for i in range(len(SUPPLIERS)):
             val = int(pivot.loc[store,i]) if store in pivot.index else 0
             new = cols[i+1].checkbox(
-                key=f"sup_{store}_{i}",
+                f"sup_{store}_{i}",   # ✅ label (required)
                 value=bool(val),
+                key=f"sup_{store}_{i}",
                 label_visibility="collapsed"
             )
+            
             st.session_state.sup_buf[(store,i)] = int(new)
 
     if st.button("💾 Save Supplier Changes"):
@@ -224,12 +226,13 @@ with tab2:
         for i in range(len(ITEMS)):
             val = int(pivot.loc[store,i]) if store in pivot.index else 0
             new = cols[i+1].number_input(
-                key=f"con_{store}_{i}",
-                min_value=0,
-                max_value=100,
+                f"con_{store}_{i}",  # ✅ ADD LABEL max_value=100,    f"con_{store}_{i}",  # ✅ ADD LABEL
                 value=val,
+                key=f"con_{store}_{i}",
                 label_visibility="collapsed"
             )
+            min_value=0,
+
             st.session_state.con_buf[(store,i)] = int(new)
 
     if st.button("💾 Save Consumption Changes"):

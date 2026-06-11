@@ -2,23 +2,27 @@ import streamlit as st
 import pandas as pd
 import os
 from supabase import create_client
+
 # ============================
 # SUPABASE SETUP
 # ============================
 
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error("❌ Supabase environment variables missing")
+    st.stop()
+
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ============================
 # CONFIG FUNCTIONS
 # ============================
+
 def get_config(key, default):
     res = supabase.table("config").select("*").eq("key", key).execute()
-    if res.data:
-        return res.data[0]["value"]
-    return default
+    return res.data[0]["value"] if res.data else default
 
 def set_config(key, value):
     supabase.table("config").upsert({
@@ -35,13 +39,12 @@ SUPPLIER_LABELS = get_config("suppliers", ["Supplier1", "Supplier2"])
 ITEM_LABELS = get_config("items", ["Item1", "Item2"])
 
 # ============================
-# SYNC DATABASE
+# SAFE SYNC
 # ============================
 
 def sync_db():
-    # switches
     existing = supabase.table("switches").select("store,supplier").execute()
-    existing_pairs = {(row["store"], row["supplier"]) for row in existing.data}
+    existing_pairs = {(r["store"], r["supplier"]) for r in existing.data}
 
     for store in STORES:
         for i in range(len(SUPPLIER_LABELS)):
@@ -52,9 +55,8 @@ def sync_db():
                     "state": 0
                 }).execute()
 
-    # consumption
     existing = supabase.table("consumption").select("store,item").execute()
-    existing_pairs = {(row["store"], row["item"]) for row in existing.data}
+    existing_pairs = {(r["store"], r["item"]) for r in existing.data}
 
     for store in STORES:
         for i in range(len(ITEM_LABELS)):
@@ -68,7 +70,7 @@ def sync_db():
 if "initialized" not in st.session_state:
     sync_db()
     st.session_state.initialized = True
-    
+
 # ============================
 # DATA FUNCTIONS
 # ============================
@@ -78,18 +80,35 @@ def get_switch_data():
     return pd.DataFrame(res.data)
 
 def update_switch(store, supplier, value):
-    supabase.table("switches").update({
-        "state": value
-    }).eq("store", store).eq("supplier", supplier).execute()
+    supabase.table("switches")\
+        .update({"state": value})\
+        .eq("store", store)\
+        .eq("supplier", supplier)\
+        .execute()
 
 def get_consumption_data():
     res = supabase.table("consumption").select("*").execute()
     return pd.DataFrame(res.data)
 
 def update_consumption(store, item, value):
-    supabase.table("consumption").update({
-        "percent": value
-    }).eq("store", store).eq("item", item).execute()
+    supabase.table("consumption")\
+        .update({"percent": value})\
+        .eq("store", store)\
+        .eq("item", item)\
+        .execute()
+
+# ============================
+# UNSAVED CHECK HELPER
+# ============================
+
+def has_unsaved_changes(changes_dict, pivot, is_bool=False):
+    for (store, i), new_val in changes_dict.items():
+        if store in pivot.index:
+            current_val = pivot.loc[store, i]
+            current_val = bool(current_val) if is_bool else int(current_val)
+            if new_val != current_val:
+                return True
+    return False
 
 # ============================
 # UI CONFIG
@@ -109,26 +128,23 @@ div[data-testid="column"] {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🟠BB Dashboard")
+st.title("🟠 BB Dashboard")
 
 tab1, tab2, tab3 = st.tabs(["🏭 Suppliers", "📦 Consumption", "⚙️ Admin"])
 
 # ============================
-# TAB 1: STORE x SUPPLIER
+# TAB 1: SWITCHES
 # ============================
 
 with tab1:
     st.subheader("Supplier Tracking")
-    st.info("📱 Rotate phone for best experience")
 
     df = get_switch_data()
-
-    if not df.empty:
-        pivot = df.pivot(index="store", columns="supplier", values="state")
-    else:
-        pivot = pd.DataFrame()
-
+    pivot = df.pivot(index="store", columns="supplier", values="state") if not df.empty else pd.DataFrame()
     pivot = pivot.reindex(columns=range(len(SUPPLIER_LABELS)), fill_value=0)
+
+    if "switch_changes" not in st.session_state:
+        st.session_state.switch_changes = {}
 
     st.markdown('<div class="scroll-table">', unsafe_allow_html=True)
 
@@ -143,21 +159,30 @@ with tab1:
         cols[0].write(store)
 
         for i in range(len(SUPPLIER_LABELS)):
-            val = False
-            if not pivot.empty and store in pivot.index:
-                val = bool(pivot.loc[store, i])
+            val = bool(pivot.loc[store, i]) if store in pivot.index else False
+            key = f"sw_{store}_{i}"
 
             new_val = cols[i+1].checkbox(
-                f"{store}_{i}",
+                key,
                 value=val,
-                key=f"{store}_supplier_{i}",
+                key=key,
                 label_visibility="collapsed"
             )
 
-            if new_val != val:
-                update_switch(store, i, int(new_val))
+            st.session_state.switch_changes[(store, i)] = int(new_val)
 
     st.markdown('</div>', unsafe_allow_html=True)
+
+    unsaved = has_unsaved_changes(st.session_state.switch_changes, pivot, is_bool=True)
+    if unsaved:
+        st.warning("⚠️ You have unsaved switch changes")
+
+    if st.button("💾 Save Switch Changes"):
+        for (store, i), value in st.session_state.switch_changes.items():
+            update_switch(store, i, value)
+
+        st.session_state.switch_changes = {}
+        st.success("✅ Switches updated!")
 
 # ============================
 # TAB 2: CONSUMPTION
@@ -165,16 +190,13 @@ with tab1:
 
 with tab2:
     st.subheader("Consumption (%)")
-    st.info("📱 Rotate phone for best experience")
 
     df = get_consumption_data()
-
-    if not df.empty:
-        pivot = df.pivot(index="store", columns="item", values="percent")
-    else:
-        pivot = pd.DataFrame()
-
+    pivot = df.pivot(index="store", columns="item", values="percent") if not df.empty else pd.DataFrame()
     pivot = pivot.reindex(columns=range(len(ITEM_LABELS)), fill_value=0)
+
+    if "consumption_changes" not in st.session_state:
+        st.session_state.consumption_changes = {}
 
     st.markdown('<div class="scroll-table">', unsafe_allow_html=True)
 
@@ -189,23 +211,32 @@ with tab2:
         cols[0].write(store)
 
         for i in range(len(ITEM_LABELS)):
-            val = 0
-            if not pivot.empty and store in pivot.index:
-                val = int(pivot.loc[store, i])
+            val = int(pivot.loc[store, i]) if store in pivot.index else 0
+            key = f"con_{store}_{i}"
 
             new_val = cols[i+1].number_input(
-                f"{store}_item_{i}",
+                key,
                 min_value=0,
                 max_value=100,
                 value=val,
-                key=f"{store}_item_{i}",
+                key=key,
                 label_visibility="collapsed"
             )
 
-            if new_val != val:
-                update_consumption(store, i, new_val)
+            st.session_state.consumption_changes[(store, i)] = int(new_val)
 
     st.markdown('</div>', unsafe_allow_html=True)
+
+    unsaved = has_unsaved_changes(st.session_state.consumption_changes, pivot)
+    if unsaved:
+        st.warning("⚠️ You have unsaved consumption changes")
+
+    if st.button("💾 Save Consumption Changes"):
+        for (store, i), value in st.session_state.consumption_changes.items():
+            update_consumption(store, i, value)
+
+        st.session_state.consumption_changes = {}
+        st.success("✅ Consumption updated!")
 
 # ============================
 # TAB 3: ADMIN
@@ -219,11 +250,11 @@ with tab3:
     if password == "admin123":
         st.success("Access granted")
 
-        stores_text = st.text_area("Stores (one per line)", "\n".join(STORES))
+        stores_text = st.text_area("Stores", "\n".join(STORES))
         if st.button("Save Stores"):
             set_config("stores", stores_text.split("\n"))
 
-        suppliers_text = st.text_area("Suppliers (columns)", "\n".join(SUPPLIER_LABELS))
+        suppliers_text = st.text_area("Suppliers", "\n".join(SUPPLIER_LABELS))
         if st.button("Save Suppliers"):
             set_config("suppliers", suppliers_text.split("\n"))
 

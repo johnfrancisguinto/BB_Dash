@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import os
-import time
 from supabase import create_client
 from datetime import datetime
 
@@ -30,7 +29,28 @@ def set_config(key, value):
     supabase.table("config").upsert({"key": key, "value": value}).execute()
 
 # ============================
-# LAST UPDATE (GLOBAL)
+# ACTIVITY LOG
+# ============================
+
+def log_activity(store, field_type, index, old, new):
+    supabase.table("activity_log").insert({
+        "store": store,
+        "field_type": field_type,
+        "field_index": index,
+        "old_value": str(old),
+        "new_value": str(new)
+    }).execute()
+
+def get_activity():
+    data = supabase.table("activity_log")\
+        .select("*")\
+        .order("created_at", desc=True)\
+        .limit(50)\
+        .execute()
+    return pd.DataFrame(data.data)
+
+# ============================
+# LAST UPDATE
 # ============================
 
 def set_last_update(store):
@@ -43,7 +63,7 @@ def get_last_update():
     return get_config("last_update", {})
 
 # ============================
-# LOAD CONFIG
+# CONFIG LOAD
 # ============================
 
 STORES = get_config("stores", ["Store1","Store2"])
@@ -62,7 +82,9 @@ def sync_db():
         for i in range(len(SUPPLIERS)):
             if (store,i) not in pairs:
                 supabase.table("switches").insert({
-                    "store": store, "supplier": i, "state": 0
+                    "store": store,
+                    "supplier": i,
+                    "state": 0
                 }).execute()
 
     existing = supabase.table("consumption").select("store,item").execute()
@@ -72,7 +94,9 @@ def sync_db():
         for i in range(len(ITEMS)):
             if (store,i) not in pairs:
                 supabase.table("consumption").insert({
-                    "store": store, "item": i, "percent": 0
+                    "store": store,
+                    "item": i,
+                    "percent": 0
                 }).execute()
 
 if "init" not in st.session_state:
@@ -89,47 +113,23 @@ def get_supplier():
 def get_consumption():
     return pd.DataFrame(supabase.table("consumption").select("*").execute().data)
 
-def update_supplier(store, i, val):
+def update_supplier(store, i, val, old):
+    if val != old:
+        log_activity(store, "supplier", i, old, val)
+
     supabase.table("switches").update({"state": val})\
         .eq("store", store).eq("supplier", i).execute()
+
     set_last_update(store)
 
-def update_consumption(store, i, val):
+def update_consumption(store, i, val, old):
+    if val != old:
+        log_activity(store, "consumption", i, old, val)
+
     supabase.table("consumption").update({"percent": val})\
         .eq("store", store).eq("item", i).execute()
+
     set_last_update(store)
-
-# ============================
-# AUTO SAVE
-# ============================
-
-def auto_save(buffer, pivot, update_fn):
-
-    changed = False
-
-    for (store,i), v in buffer.items():
-        if store in pivot.index:
-            cur = pivot.loc[store,i]
-            cur = int(cur) if not isinstance(v,bool) else bool(cur)
-            if v != cur:
-                changed = True
-                break
-
-    if changed and "timer" not in st.session_state:
-        st.session_state.timer = time.time()
-
-    if changed:
-        st.warning("⚠️ Unsaved changes...")
-
-    if changed and time.time() - st.session_state.timer > 2:
-
-        with st.spinner("🔄 Saving..."):
-            for (s,i), v in buffer.items():
-                update_fn(s,i,v)
-
-        buffer.clear()
-        del st.session_state["timer"]
-        st.success("✅ Auto-saved")
 
 # ============================
 # UI
@@ -138,7 +138,12 @@ def auto_save(buffer, pivot, update_fn):
 st.set_page_config(layout="wide")
 st.title("🟠 BB Dashboard")
 
-tab1, tab2, tab3 = st.tabs(["🏭 Suppliers","📦 Consumption","⚙️ Admin"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🏭 Suppliers",
+    "📦 Consumption",
+    "⚙️ Admin",
+    "📜 Activity"
+])
 
 # ============================
 # TAB 1: SUPPLIERS
@@ -153,14 +158,13 @@ with tab1:
     if "sup_buf" not in st.session_state:
         st.session_state.sup_buf = {}
 
-    # ✅ HEADER
+    # Header
     header = st.columns(len(SUPPLIERS)+1)
     header[0].write("Store")
 
     for i, label in enumerate(SUPPLIERS):
         header[i+1].write(label)
 
-    # ✅ TABLE
     for store in STORES:
         cols = st.columns(len(SUPPLIERS)+1)
         cols[0].write(store)
@@ -176,9 +180,13 @@ with tab1:
 
             st.session_state.sup_buf[(store,i)] = int(new)
 
-    auto_save(st.session_state.sup_buf, pivot, update_supplier)
+    if st.button("💾 Save Supplier Changes"):
+        for (store,i), val in st.session_state.sup_buf.items():
+            old = int(pivot.loc[store,i]) if store in pivot.index else 0
+            update_supplier(store, i, val, old)
 
-    # ✅ GLOBAL LABEL
+        st.success("✅ Saved")
+
     last = get_last_update()
     if last:
         t = datetime.fromisoformat(last["time"])
@@ -197,14 +205,12 @@ with tab2:
     if "con_buf" not in st.session_state:
         st.session_state.con_buf = {}
 
-    # ✅ HEADER
     header = st.columns(len(ITEMS)+1)
     header[0].write("Store")
 
     for i, label in enumerate(ITEMS):
         header[i+1].write(f"{label} (%)")
 
-    # ✅ TABLE
     for store in STORES:
         cols = st.columns(len(ITEMS)+1)
         cols[0].write(store)
@@ -220,16 +226,38 @@ with tab2:
 
             st.session_state.con_buf[(store,i)] = int(new)
 
-    auto_save(st.session_state.con_buf, pivot, update_consumption)
+    if st.button("💾 Save Consumption Changes"):
+        for (store,i), val in st.session_state.con_buf.items():
+            old = int(pivot.loc[store,i]) if store in pivot.index else 0
+            update_consumption(store, i, val, old)
 
-    # ✅ GLOBAL LABEL
+        st.success("✅ Saved")
+
     last = get_last_update()
     if last:
         t = datetime.fromisoformat(last["time"])
         st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
-# TAB 3: ADMIN
+# TAB 4: ACTIVITY LOG
+# ============================
+
+with tab4:
+
+    st.subheader("Activity History (Latest 50)")
+
+    df = get_activity()
+
+    if df.empty:
+        st.info("No activity yet")
+    else:
+        df["created_at"] = pd.to_datetime(df["created_at"])
+        df = df.sort_values("created_at", ascending=False)
+
+        st.dataframe(df, use_container_width=True)
+
+# ============================
+# ADMIN
 # ============================
 
 with tab3:

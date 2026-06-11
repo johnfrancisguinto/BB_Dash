@@ -13,7 +13,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("❌ Supabase environment variables missing")
+    st.error("❌ Missing Supabase env")
     st.stop()
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -27,14 +27,28 @@ def get_config(key, default):
     return res.data[0]["value"] if res.data else default
 
 def set_config(key, value):
-    supabase.table("config").upsert({
-        "key": key,
-        "value": value
-    }).execute()
+    supabase.table("config").upsert({"key": key, "value": value}).execute()
+
+# ============================
+# GLOBAL LAST UPDATE
+# ============================
+
+def set_last_update(store):
+    set_config("last_update", {
+        "store": store,
+        "time": datetime.now().isoformat()
+    })
+
+def get_last_update():
+    return get_config("last_update", {})
+
+# ============================
+# LOAD CONFIG
+# ============================
 
 STORES = get_config("stores", ["Store1","Store2"])
-SUPPLIER_LABELS = get_config("suppliers", ["Supplier1","Supplier2"])
-ITEM_LABELS = get_config("items", ["Item1","Item2"])
+SUPPLIERS = get_config("suppliers", ["Supplier1","Supplier2"])
+ITEMS = get_config("items", ["Item1","Item2"])
 
 # ============================
 # SYNC
@@ -42,21 +56,21 @@ ITEM_LABELS = get_config("items", ["Item1","Item2"])
 
 def sync_db():
     existing = supabase.table("switches").select("store,supplier").execute()
-    existing_pairs = {(r["store"], r["supplier"]) for r in existing.data}
+    pairs = {(r["store"], r["supplier"]) for r in existing.data}
 
     for store in STORES:
-        for i in range(len(SUPPLIER_LABELS)):
-            if (store, i) not in existing_pairs:
+        for i in range(len(SUPPLIERS)):
+            if (store,i) not in pairs:
                 supabase.table("switches").insert({
                     "store": store, "supplier": i, "state": 0
                 }).execute()
 
     existing = supabase.table("consumption").select("store,item").execute()
-    existing_pairs = {(r["store"], r["item"]) for r in existing.data}
+    pairs = {(r["store"], r["item"]) for r in existing.data}
 
     for store in STORES:
-        for i in range(len(ITEM_LABELS)):
-            if (store, i) not in existing_pairs:
+        for i in range(len(ITEMS)):
+            if (store,i) not in pairs:
                 supabase.table("consumption").insert({
                     "store": store, "item": i, "percent": 0
                 }).execute()
@@ -75,52 +89,47 @@ def get_supplier():
 def get_consumption():
     return pd.DataFrame(supabase.table("consumption").select("*").execute().data)
 
-def update_supplier(store, supplier, value):
-    supabase.table("switches").update({
-        "state": value,
-        "updated_by": store,
-        "updated_at": "now()"
-    }).eq("store", store).eq("supplier", supplier).execute()
+def update_supplier(store, i, val):
+    supabase.table("switches").update({"state": val})\
+        .eq("store", store).eq("supplier", i).execute()
+    set_last_update(store)
 
-def update_consumption(store, item, value):
-    supabase.table("consumption").update({
-        "percent": value,
-        "updated_by": store,
-        "updated_at": "now()"
-    }).eq("store", store).eq("item", item).execute()
+def update_consumption(store, i, val):
+    supabase.table("consumption").update({"percent": val})\
+        .eq("store", store).eq("item", i).execute()
+    set_last_update(store)
 
 # ============================
-# AUTO SAVE LOGIC
+# AUTO SAVE (FIXED)
 # ============================
 
-def auto_save(buffer, pivot, update_fn, delay=2):
-    now = time.time()
-
-    if "last_change_time" not in st.session_state:
-        st.session_state.last_change_time = now
-
+def auto_save(buffer, pivot, update_fn):
     changed = False
 
-    for (store,i), new_val in buffer.items():
+    for (store,i), v in buffer.items():
         if store in pivot.index:
-            current_val = pivot.loc[store,i]
-            if isinstance(new_val,bool):
-                current_val = bool(current_val)
-            else:
-                current_val = int(current_val)
-
-            if new_val != current_val:
+            cur = pivot.loc[store,i]
+            cur = int(cur) if not isinstance(v,bool) else bool(cur)
+            if v != cur:
                 changed = True
+                break
+
+    # Start timer only once
+    if changed and "timer" not in st.session_state:
+        st.session_state.timer = time.time()
 
     if changed:
-        st.session_state.last_change_time = now
-        st.warning("⚠️ Unsaved changes... auto-saving soon")
+        st.warning("⚠️ Unsaved changes...")
 
-    if changed and (now - st.session_state.last_change_time > delay):
-        for (store,i), val in buffer.items():
-            update_fn(store, i, val)
+    # Auto-save after delay
+    if changed and time.time() - st.session_state.timer > 2:
+
+        with st.spinner("🔄 Saving..."):
+            for (s,i), v in buffer.items():
+                update_fn(s,i,v)
 
         buffer.clear()
+        del st.session_state["timer"]
         st.success("✅ Auto-saved")
 
 # ============================
@@ -133,85 +142,69 @@ st.title("🟠 BB Dashboard")
 tab1, tab2, tab3 = st.tabs(["🏭 Suppliers","📦 Consumption","⚙️ Admin"])
 
 # ============================
-# SUPPLIERS TAB
+# TAB 1
 # ============================
 
 with tab1:
-
     df = get_supplier()
     pivot = df.pivot(index="store", columns="supplier", values="state") if not df.empty else pd.DataFrame()
-    pivot = pivot.reindex(columns=range(len(SUPPLIER_LABELS)), fill_value=0)
+    pivot = pivot.reindex(columns=range(len(SUPPLIERS)), fill_value=0)
 
-    if "sup_buffer" not in st.session_state:
-        st.session_state.sup_buffer = {}
+    if "sup_buf" not in st.session_state:
+        st.session_state.sup_buf = {}
 
     for store in STORES:
-        cols = st.columns(len(SUPPLIER_LABELS)+1)
+        cols = st.columns(len(SUPPLIERS)+1)
         cols[0].write(store)
 
-        for i in range(len(SUPPLIER_LABELS)):
+        for i in range(len(SUPPLIERS)):
             val = bool(pivot.loc[store,i]) if store in pivot.index else False
-            new_val = cols[i+1].checkbox(
-                f"s_{store}_{i}",
-                value=val,
-                key=f"s_{store}_{i}"
-            )
+            new = cols[i+1].checkbox(f"{store}_{i}", value=val)
+            st.session_state.sup_buf[(store,i)] = int(new)
 
-            st.session_state.sup_buffer[(store,i)] = int(new_val)
+    auto_save(st.session_state.sup_buf, pivot, update_supplier)
 
-        # timestamp
-        if not df.empty:
-            row = df[df["store"]==store].iloc[0]
-            if "updated_at" in row and row["updated_at"]:
-                t = datetime.fromisoformat(row["updated_at"])
-                cols[0].caption(f"🕒 {row['updated_by']} @ {t.strftime('%H:%M:%S')}")
-
-    auto_save(st.session_state.sup_buffer, pivot, update_supplier)
+    # ✅ SINGLE GLOBAL LABEL
+    last = get_last_update()
+    if last:
+        t = datetime.fromisoformat(last["time"])
+        st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
-# CONSUMPTION TAB
+# TAB 2
 # ============================
 
 with tab2:
-
     df = get_consumption()
     pivot = df.pivot(index="store", columns="item", values="percent") if not df.empty else pd.DataFrame()
-    pivot = pivot.reindex(columns=range(len(ITEM_LABELS)), fill_value=0)
+    pivot = pivot.reindex(columns=range(len(ITEMS)), fill_value=0)
 
-    if "con_buffer" not in st.session_state:
-        st.session_state.con_buffer = {}
+    if "con_buf" not in st.session_state:
+        st.session_state.con_buf = {}
 
     for store in STORES:
-        cols = st.columns(len(ITEM_LABELS)+1)
+        cols = st.columns(len(ITEMS)+1)
         cols[0].write(store)
 
-        for i in range(len(ITEM_LABELS)):
+        for i in range(len(ITEMS)):
             val = int(pivot.loc[store,i]) if store in pivot.index else 0
-            new_val = cols[i+1].number_input(
-                f"c_{store}_{i}",
-                0,100,val,
-                key=f"c_{store}_{i}"
-            )
+            new = cols[i+1].number_input(f"{store}_{i}", 0,100,val)
+            st.session_state.con_buf[(store,i)] = int(new)
 
-            st.session_state.con_buffer[(store,i)] = int(new_val)
+    auto_save(st.session_state.con_buf, pivot, update_consumption)
 
-        if not df.empty:
-            row = df[df["store"]==store].iloc[0]
-            if "updated_at" in row and row["updated_at"]:
-                t = datetime.fromisoformat(row["updated_at"])
-                cols[0].caption(f"🕒 {row['updated_by']} @ {t.strftime('%H:%M:%S')}")
-
-    auto_save(st.session_state.con_buffer, pivot, update_consumption)
+    # ✅ SAME GLOBAL LABEL
+    last = get_last_update()
+    if last:
+        t = datetime.fromisoformat(last["time"])
+        st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
 # ADMIN
 # ============================
 
 with tab3:
-    pw = st.text_input("Admin Password", type="password")
+    pw = st.text_input("Admin password", type="password")
 
-    if pw=="admin123":
+    if pw == "admin123":
         st.success("Access granted")
-
-        if st.button("Save Stores"):
-            set_config("stores", STORES)

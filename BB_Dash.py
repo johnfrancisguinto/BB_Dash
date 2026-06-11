@@ -1,16 +1,19 @@
-import streamlit as st
-import pandas as pd
+import streamlit as stimport streamimport pandas as pd
 import os
 from supabase import create_client
 from datetime import datetime
 import pytz
 
 # ============================
-# SUPABASE
+# SUPABASE SETUP
 # ============================
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error("❌ Missing Supabase env")
+    st.stop()
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -39,6 +42,45 @@ def get_last_update():
     return get_config("last_update", {})
 
 # ============================
+# ACTIVITY LOG
+# ============================
+
+def log_activity(store, typ, old, new):
+    supabase.table("activity_log").insert({
+        "store": store,
+        "field_type": typ,
+        "old_value": str(old),
+        "new_value": str(new)
+    }).execute()
+
+def get_activity():
+    res = supabase.table("activity_log")\
+        .select("*")\
+        .order("created_at", desc=True)\
+        .limit(50)\
+        .execute()
+
+    df = pd.DataFrame(res.data)
+
+    if df.empty:
+        return df
+
+    df = df[["store","field_type","old_value","new_value","created_at"]]
+
+    # ✅ Convert supplier values to icons
+    df["old_value"] = df.apply(
+        lambda x: "✅" if x["old_value"]=="1" and x["field_type"]=="supplier"
+        else "❌" if x["old_value"]=="0" and x["field_type"]=="supplier"
+        else x["old_value"], axis=1)
+
+    df["new_value"] = df.apply(
+        lambda x: "✅" if x["new_value"]=="1" and x["field_type"]=="supplier"
+        else "❌" if x["new_value"]=="0" and x["field_type"]=="supplier"
+        else x["new_value"], axis=1)
+
+    return df
+
+# ============================
 # LOAD CONFIG
 # ============================
 
@@ -56,15 +98,23 @@ def get_supplier():
 def get_consumption():
     return pd.DataFrame(supabase.table("consumption").select("*").execute().data)
 
-def update_supplier(store, i, val):
-    supabase.table("switches").update({"state": val})\
-        .eq("store", store).eq("supplier", i).execute()
-    set_last_update(store)
+def update_supplier(store, i, new, old):
+    if new != old:
+        log_activity(store,"supplier",old,new)
 
-def update_consumption(store, i, val):
-    supabase.table("consumption").update({"percent": val})\
-        .eq("store", store).eq("item", i).execute()
-    set_last_update(store)
+        supabase.table("switches").update({"state":new})\
+            .eq("store",store).eq("supplier",i).execute()
+
+        set_last_update(store)
+
+def update_consumption(store, i, new, old):
+    if new != old:
+        log_activity(store,"consumption",old,new)
+
+        supabase.table("consumption").update({"percent":new})\
+            .eq("store",store).eq("item",i).execute()
+
+        set_last_update(store)
 
 # ============================
 # UI
@@ -73,7 +123,9 @@ def update_consumption(store, i, val):
 st.set_page_config(layout="wide")
 st.title("🟠 BB Dashboard")
 
-tab1, tab2, tab3 = st.tabs(["🏭 Suppliers","📦 Consumption","⚙️ Admin"])
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["🏭 Suppliers","📦 Consumption","⚙️ Admin","📜 Activity"]
+)
 
 # ============================
 # TAB 1: SUPPLIERS
@@ -85,13 +137,13 @@ with tab1:
     pivot = df.pivot(index="store", columns="supplier", values="state") if not df.empty else pd.DataFrame()
     pivot = pivot.reindex(columns=range(len(SUPPLIERS)), fill_value=0)
 
+    # Header
     header = st.columns(len(SUPPLIERS)+1)
     header[0].write("Store")
 
     for i,label in enumerate(SUPPLIERS):
         header[i+1].write(label)
 
-    changed = False
     values = {}
 
     for store in STORES:
@@ -101,25 +153,18 @@ with tab1:
         for i in range(len(SUPPLIERS)):
             val = int(pivot.loc[store,i]) if store in pivot.index else 0
 
-            key = f"sup_{store}_{i}"
-
             new = cols[i+1].checkbox(
-                key,
+                f"sup_{store}_{i}",
                 value=bool(val),
                 label_visibility="collapsed"
             )
 
             values[(store,i)] = int(new)
 
-            if new != val:
-                changed = True
-
-    if changed:
-        st.warning("⚠️ You have unsaved supplier changes")
-
     if st.button("💾 Save Supplier Changes"):
         for (store,i), val in values.items():
-            update_supplier(store,i,val)
+            old = int(pivot.loc[store,i]) if store in pivot.index else 0
+            update_supplier(store,i,val,old)
 
         st.success("✅ Saved")
 
@@ -129,6 +174,7 @@ with tab1:
         utc = datetime.fromisoformat(last["time"])
         ph = pytz.timezone("Asia/Manila")
         t = utc.astimezone(ph)
+
         st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
@@ -141,13 +187,13 @@ with tab2:
     pivot = df.pivot(index="store", columns="item", values="percent") if not df.empty else pd.DataFrame()
     pivot = pivot.reindex(columns=range(len(ITEMS)), fill_value=0)
 
+    # Header
     header = st.columns(len(ITEMS)+1)
     header[0].write("Store")
 
     for i,label in enumerate(ITEMS):
         header[i+1].write(f"{label} (%)")
 
-    changed = False
     values = {}
 
     for store in STORES:
@@ -157,25 +203,20 @@ with tab2:
         for i in range(len(ITEMS)):
             val = int(pivot.loc[store,i]) if store in pivot.index else 0
 
-            key = f"con_{store}_{i}"
-
             new = cols[i+1].number_input(
-                key,
-                0,100,val,
+                f"con_{store}_{i}",
+                min_value=0,
+                max_value=100,
+                value=val,
                 label_visibility="collapsed"
             )
 
             values[(store,i)] = int(new)
 
-            if new != val:
-                changed = True
-
-    if changed:
-        st.warning("⚠️ You have unsaved consumption changes")
-
     if st.button("💾 Save Consumption Changes"):
         for (store,i), val in values.items():
-            update_consumption(store,i,val)
+            old = int(pivot.loc[store,i]) if store in pivot.index else 0
+            update_consumption(store,i,val,old)
 
         st.success("✅ Saved")
 
@@ -185,14 +226,29 @@ with tab2:
         utc = datetime.fromisoformat(last["time"])
         ph = pytz.timezone("Asia/Manila")
         t = utc.astimezone(ph)
+
         st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
-# ADMIN
+# TAB 3: ACTIVITY
 # ============================
 
 with tab3:
-    st.subheader("Admin Panel")
+
+    st.subheader("Activity History")
+
+    df = get_activity()
+
+    if df.empty:
+        st.info("No activity yet")
+    else:
+        st.dataframe(df, use_container_width=True)
+
+# ============================
+# TAB 4: ADMIN
+# ============================
+
+with tab4:
 
     password = st.text_input("Admin password", type="password")
 
@@ -210,6 +266,5 @@ with tab3:
         items_text = st.text_area("Items", "\n".join(ITEMS))
         if st.button("Save Items"):
             set_config("items", items_text.split("\n"))
-
     else:
         st.warning("Enter admin password")

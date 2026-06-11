@@ -29,28 +29,7 @@ def set_config(key, value):
     supabase.table("config").upsert({"key": key, "value": value}).execute()
 
 # ============================
-# ACTIVITY LOG
-# ============================
-
-def log_activity(store, field_type, index, old, new):
-    supabase.table("activity_log").insert({
-        "store": store,
-        "field_type": field_type,
-        "field_index": index,
-        "old_value": str(old),
-        "new_value": str(new)
-    }).execute()
-
-def get_activity():
-    data = supabase.table("activity_log")\
-        .select("*")\
-        .order("created_at", desc=True)\
-        .limit(50)\
-        .execute()
-    return pd.DataFrame(data.data)
-
-# ============================
-# LAST UPDATE
+# LAST UPDATE (FIXED)
 # ============================
 
 def set_last_update(store):
@@ -63,7 +42,49 @@ def get_last_update():
     return get_config("last_update", {})
 
 # ============================
-# CONFIG LOAD
+# ACTIVITY LOG
+# ============================
+
+def log_activity(store, typ, old, new):
+    supabase.table("activity_log").insert({
+        "store": store,
+        "field_type": typ,
+        "old_value": str(old),
+        "new_value": str(new)
+    }).execute()
+
+def get_activity():
+    res = supabase.table("activity_log")\
+        .select("*")\
+        .order("created_at", desc=True)\
+        .limit(50)\
+        .execute()
+
+    df = pd.DataFrame(res.data)
+
+    if df.empty:
+        return df
+
+    # ✅ Clean columns
+    df = df[["store", "field_type", "old_value", "new_value", "created_at"]]
+
+    # ✅ Replace supplier 0/1 with icons
+    df["old_value"] = df.apply(
+        lambda x: "✅" if x["old_value"] == "1" and x["field_type"]=="supplier"
+        else "❌" if x["old_value"] == "0" and x["field_type"]=="supplier"
+        else x["old_value"], axis=1
+    )
+
+    df["new_value"] = df.apply(
+        lambda x: "✅" if x["new_value"] == "1" and x["field_type"]=="supplier"
+        else "❌" if x["new_value"] == "0" and x["field_type"]=="supplier"
+        else x["new_value"], axis=1
+    )
+
+    return df
+
+# ============================
+# LOAD CONFIG
 # ============================
 
 STORES = get_config("stores", ["Store1","Store2"])
@@ -82,9 +103,7 @@ def sync_db():
         for i in range(len(SUPPLIERS)):
             if (store,i) not in pairs:
                 supabase.table("switches").insert({
-                    "store": store,
-                    "supplier": i,
-                    "state": 0
+                    "store": store, "supplier": i, "state": 0
                 }).execute()
 
     existing = supabase.table("consumption").select("store,item").execute()
@@ -94,9 +113,7 @@ def sync_db():
         for i in range(len(ITEMS)):
             if (store,i) not in pairs:
                 supabase.table("consumption").insert({
-                    "store": store,
-                    "item": i,
-                    "percent": 0
+                    "store": store, "item": i, "percent": 0
                 }).execute()
 
 if "init" not in st.session_state:
@@ -113,23 +130,20 @@ def get_supplier():
 def get_consumption():
     return pd.DataFrame(supabase.table("consumption").select("*").execute().data)
 
-def update_supplier(store, i, val, old):
-    if val != old:
-        log_activity(store, "supplier", i, old, val)
+# ✅ FIXED: only update/log when value actually changes
+def update_supplier(store, i, new, old):
+    if new != old:
+        log_activity(store, "supplier", old, new)
+        supabase.table("switches").update({"state": new})\
+            .eq("store", store).eq("supplier", i).execute()
+        set_last_update(store)
 
-    supabase.table("switches").update({"state": val})\
-        .eq("store", store).eq("supplier", i).execute()
-
-    set_last_update(store)
-
-def update_consumption(store, i, val, old):
-    if val != old:
-        log_activity(store, "consumption", i, old, val)
-
-    supabase.table("consumption").update({"percent": val})\
-        .eq("store", store).eq("item", i).execute()
-
-    set_last_update(store)
+def update_consumption(store, i, new, old):
+    if new != old:
+        log_activity(store, "consumption", old, new)
+        supabase.table("consumption").update({"percent": new})\
+            .eq("store", store).eq("item", i).execute()
+        set_last_update(store)
 
 # ============================
 # UI
@@ -138,12 +152,9 @@ def update_consumption(store, i, val, old):
 st.set_page_config(layout="wide")
 st.title("🟠 BB Dashboard")
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🏭 Suppliers",
-    "📦 Consumption",
-    "⚙️ Admin",
-    "📜 Activity"
-])
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["🏭 Suppliers","📦 Consumption","⚙️ Admin","📜 Activity"]
+)
 
 # ============================
 # TAB 1: SUPPLIERS
@@ -158,32 +169,39 @@ with tab1:
     if "sup_buf" not in st.session_state:
         st.session_state.sup_buf = {}
 
-    # Header
     header = st.columns(len(SUPPLIERS)+1)
     header[0].write("Store")
 
     for i, label in enumerate(SUPPLIERS):
         header[i+1].write(label)
 
+    unsaved = False
+
     for store in STORES:
         cols = st.columns(len(SUPPLIERS)+1)
         cols[0].write(store)
 
         for i in range(len(SUPPLIERS)):
-            val = bool(pivot.loc[store,i]) if store in pivot.index else False
+            val = int(pivot.loc[store,i]) if store in pivot.index else 0
 
             new = cols[i+1].checkbox(
-                f"sup_{store}_{i}",
-                value=val,
+                f"{store}_{i}",
+                value=bool(val),
                 label_visibility="collapsed"
             )
 
             st.session_state.sup_buf[(store,i)] = int(new)
 
+            if new != val:
+                unsaved = True
+
+    if unsaved:
+        st.warning("⚠️ Unsaved supplier changes")
+
     if st.button("💾 Save Supplier Changes"):
         for (store,i), val in st.session_state.sup_buf.items():
             old = int(pivot.loc[store,i]) if store in pivot.index else 0
-            update_supplier(store, i, val, old)
+            update_supplier(store,i,val,old)
 
         st.success("✅ Saved")
 
@@ -211,6 +229,8 @@ with tab2:
     for i, label in enumerate(ITEMS):
         header[i+1].write(f"{label} (%)")
 
+    unsaved = False
+
     for store in STORES:
         cols = st.columns(len(ITEMS)+1)
         cols[0].write(store)
@@ -219,17 +239,23 @@ with tab2:
             val = int(pivot.loc[store,i]) if store in pivot.index else 0
 
             new = cols[i+1].number_input(
-                f"con_{store}_{i}",
+                f"{store}_{i}",
                 0,100,val,
                 label_visibility="collapsed"
             )
 
             st.session_state.con_buf[(store,i)] = int(new)
 
+            if new != val:
+                unsaved = True
+
+    if unsaved:
+        st.warning("⚠️ Unsaved consumption changes")
+
     if st.button("💾 Save Consumption Changes"):
         for (store,i), val in st.session_state.con_buf.items():
             old = int(pivot.loc[store,i]) if store in pivot.index else 0
-            update_consumption(store, i, val, old)
+            update_consumption(store,i,val,old)
 
         st.success("✅ Saved")
 
@@ -239,21 +265,18 @@ with tab2:
         st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
-# TAB 4: ACTIVITY LOG
+# TAB 4: ACTIVITY
 # ============================
 
 with tab4:
 
-    st.subheader("Activity History (Latest 50)")
+    st.subheader("Activity History")
 
     df = get_activity()
 
     if df.empty:
         st.info("No activity yet")
     else:
-        df["created_at"] = pd.to_datetime(df["created_at"])
-        df = df.sort_values("created_at", ascending=False)
-
         st.dataframe(df, use_container_width=True)
 
 # ============================
@@ -265,15 +288,3 @@ with tab3:
 
     if pw == "admin123":
         st.success("Access granted")
-
-        stores_text = st.text_area("Stores", "\n".join(STORES))
-        if st.button("Save Stores"):
-            set_config("stores", stores_text.split("\n"))
-
-        suppliers_text = st.text_area("Suppliers", "\n".join(SUPPLIERS))
-        if st.button("Save Suppliers"):
-            set_config("suppliers", suppliers_text.split("\n"))
-
-        items_text = st.text_area("Items", "\n".join(ITEMS))
-        if st.button("Save Items"):
-            set_config("items", items_text.split("\n"))

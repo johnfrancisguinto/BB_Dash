@@ -6,15 +6,14 @@ from supabase import create_client
 # SUPABASE SETUP
 # ============================
 
-SUPABASE_URL = os.getenv("https://myukobnhgwldsxynflha.supabase.co")
-SUPABASE_KEY = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15dWtvYm5oZ3dsZHN4eW5mbGhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwODkxODgsImV4cCI6MjA5NjY2NTE4OH0.50Wq-iEdzbJbsMx2KkmnrnTc0UMb8t1J7s0TSUFup98")
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ============================
 # CONFIG FUNCTIONS
 # ============================
-
-st.write("ENV CHECK:", SUPABASE_URL)
 def get_config(key, default):
     res = supabase.table("config").select("*").eq("key", key).execute()
     if res.data:

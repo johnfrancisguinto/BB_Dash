@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import os
 from supabase import create_client
-
 # ============================
 # SUPABASE SETUP
 # ============================
@@ -15,6 +14,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # CONFIG FUNCTIONS
 # ============================
 
+st.write("ENV CHECK:", SUPABASE_URL)
 def get_config(key, default):
     res = supabase.table("config").select("*").eq("key", key).execute()
     if res.data:

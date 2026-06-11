@@ -34,9 +34,14 @@ def set_config(key, value):
 # ============================
 
 def set_last_update(store):
+    last = get_last_update()
+    if last:
+        utc = datetime.fromisoformat(last["time"])
+        ph = pytz.timezone("Asia/Manila")
+        t = utc.astimezone(ph)
     set_config("last_update", {
         "store": store,
-        "time": datetime.utcnow().isoformat()
+        "time": t
     })
 
 def get_last_update():

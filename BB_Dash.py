@@ -174,6 +174,13 @@ with tab1:
             update_supplier(store,i,val,old)
 
         st.success("✅ Saved")
+        
+    last = get_last_update()
+    if last:
+        utc = datetime.fromisoformat(last["time"])
+        ph = pytz.timezone("Asia/Manila")
+        t = utc.astimezone(ph)
+        st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
 # TAB 2: CONSUMPTION

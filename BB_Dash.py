@@ -19,7 +19,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ============================
-# CONFIG
+# CONFIG FUNCTIONS
 # ============================
 
 def get_config(key, default):
@@ -68,7 +68,7 @@ def get_activity():
 
     df = df[["store","field_type","old_value","new_value","created_at"]]
 
-    # ✅ Convert supplier values to icons
+    # supplier icons
     df["old_value"] = df.apply(
         lambda x: "✅" if x["old_value"]=="1" and x["field_type"]=="supplier"
         else "❌" if x["old_value"]=="0" and x["field_type"]=="supplier"
@@ -89,6 +89,9 @@ STORES = get_config("stores", ["Store1","Store2"])
 SUPPLIERS = get_config("suppliers", ["Supplier1","Supplier2"])
 ITEMS = get_config("items", ["Item1","Item2"])
 
+STORE_SUPPLIERS = get_config("store_suppliers", {})
+STORE_ITEMS = get_config("store_items", {})
+
 # ============================
 # DATA
 # ============================
@@ -102,19 +105,15 @@ def get_consumption():
 def update_supplier(store, i, new, old):
     if new != old:
         log_activity(store,"supplier",old,new)
-
         supabase.table("switches").update({"state":new})\
             .eq("store",store).eq("supplier",i).execute()
-
         set_last_update(store)
 
 def update_consumption(store, i, new, old):
     if new != old:
         log_activity(store,"consumption",old,new)
-
         supabase.table("consumption").update({"percent":new})\
             .eq("store",store).eq("item",i).execute()
-
         set_last_update(store)
 
 # ============================
@@ -138,10 +137,8 @@ with tab1:
     pivot = df.pivot(index="store", columns="supplier", values="state") if not df.empty else pd.DataFrame()
     pivot = pivot.reindex(columns=range(len(SUPPLIERS)), fill_value=0)
 
-    # Header
     header = st.columns(len(SUPPLIERS)+1)
     header[0].write("Store")
-
     for i,label in enumerate(SUPPLIERS):
         header[i+1].write(label)
 
@@ -151,16 +148,25 @@ with tab1:
         cols = st.columns(len(SUPPLIERS)+1)
         cols[0].write(store)
 
+        allowed = STORE_SUPPLIERS.get(store, list(range(len(SUPPLIERS))))
+
         for i in range(len(SUPPLIERS)):
             val = int(pivot.loc[store,i]) if store in pivot.index else 0
 
-            new = cols[i+1].checkbox(
-                f"sup_{store}_{i}",
-                value=bool(val),
-                label_visibility="collapsed"
-            )
-
-            values[(store,i)] = int(new)
+            if i in allowed:
+                new = cols[i+1].checkbox(
+                    f"sup_{store}_{i}",
+                    value=bool(val),
+                    label_visibility="collapsed"
+                )
+                values[(store,i)] = int(new)
+            else:
+                cols[i+1].checkbox(
+                    f"disabled_sup_{store}_{i}",
+                    value=False,
+                    disabled=True,
+                    label_visibility="collapsed"
+                )
 
     if st.button("💾 Save Supplier Changes"):
         for (store,i), val in values.items():
@@ -168,15 +174,6 @@ with tab1:
             update_supplier(store,i,val,old)
 
         st.success("✅ Saved")
-
-    # ✅ PH TIME
-    last = get_last_update()
-    if last:
-        utc = datetime.fromisoformat(last["time"])
-        ph = pytz.timezone("Asia/Manila")
-        t = utc.astimezone(ph)
-
-        st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
 # TAB 2: CONSUMPTION
@@ -188,10 +185,8 @@ with tab2:
     pivot = df.pivot(index="store", columns="item", values="percent") if not df.empty else pd.DataFrame()
     pivot = pivot.reindex(columns=range(len(ITEMS)), fill_value=0)
 
-    # Header
     header = st.columns(len(ITEMS)+1)
     header[0].write("Store")
-
     for i,label in enumerate(ITEMS):
         header[i+1].write(f"{label} (%)")
 
@@ -201,18 +196,29 @@ with tab2:
         cols = st.columns(len(ITEMS)+1)
         cols[0].write(store)
 
+        allowed = STORE_ITEMS.get(store, list(range(len(ITEMS))))
+
         for i in range(len(ITEMS)):
             val = int(pivot.loc[store,i]) if store in pivot.index else 0
 
-            new = cols[i+1].number_input(
-                f"con_{store}_{i}",
-                min_value=0,
-                max_value=100,
-                value=val,
-                label_visibility="collapsed"
-            )
-
-            values[(store,i)] = int(new)
+            if i in allowed:
+                new = cols[i+1].number_input(
+                    f"con_{store}_{i}",
+                    min_value=0,
+                    max_value=100,
+                    value=val,
+                    label_visibility="collapsed"
+                )
+                values[(store,i)] = int(new)
+            else:
+                cols[i+1].number_input(
+                    f"disabled_con_{store}_{i}",
+                    min_value=0,
+                    max_value=100,
+                    value=0,
+                    disabled=True,
+                    label_visibility="collapsed"
+                )
 
     if st.button("💾 Save Consumption Changes"):
         for (store,i), val in values.items():
@@ -227,7 +233,6 @@ with tab2:
         utc = datetime.fromisoformat(last["time"])
         ph = pytz.timezone("Asia/Manila")
         t = utc.astimezone(ph)
-
         st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
@@ -256,6 +261,7 @@ with tab4:
     if password == "admin123":
         st.success("Access granted")
 
+        # existing configs
         stores_text = st.text_area("Stores", "\n".join(STORES))
         if st.button("Save Stores"):
             set_config("stores", stores_text.split("\n"))
@@ -267,5 +273,60 @@ with tab4:
         items_text = st.text_area("Items", "\n".join(ITEMS))
         if st.button("Save Items"):
             set_config("items", items_text.split("\n"))
+
+        st.divider()
+
+        # supplier mapping
+        st.subheader("Supplier Access Per Store")
+
+        supplier_map = {}
+
+        for store in STORES:
+            st.write(f"**{store}**")
+            cols = st.columns(len(SUPPLIERS))
+
+            selected = []
+            for i, supplier in enumerate(SUPPLIERS):
+                val = cols[i].checkbox(
+                    supplier,
+                    value=i in STORE_SUPPLIERS.get(store, []),
+                    key=f"sup_map_{store}_{i}"
+                )
+                if val:
+                    selected.append(i)
+
+            supplier_map[store] = selected
+
+        if st.button("💾 Save Supplier Mapping"):
+            set_config("store_suppliers", supplier_map)
+            st.success("✅ Supplier mapping saved")
+
+        st.divider()
+
+        # item mapping
+        st.subheader("Item Access Per Store")
+
+        item_map = {}
+
+        for store in STORES:
+            st.write(f"**{store}**")
+            cols = st.columns(len(ITEMS))
+
+            selected = []
+            for i, item in enumerate(ITEMS):
+                val = cols[i].checkbox(
+                    item,
+                    value=i in STORE_ITEMS.get(store, []),
+                    key=f"item_map_{store}_{i}"
+                )
+                if val:
+                    selected.append(i)
+
+            item_map[store] = selected
+
+        if st.button("💾 Save Item Mapping"):
+            set_config("store_items", item_map)
+            st.success("✅ Item mapping saved")
+
     else:
         st.warning("Enter admin password")

@@ -3,7 +3,7 @@ import pandas as pd
 import os
 from supabase import create_client
 from datetime import datetime
-
+import pytz
 # ============================
 # SUPABASE
 # ============================
@@ -77,6 +77,16 @@ def get_activity():
         else x["new_value"], axis=1)
 
     return df
+    
+def has_unsaved_changes(buffer, pivot):
+    for (store, i), new_val in buffer.items():
+        if store in pivot.index:
+            current = pivot.loc[store, i]
+            current = int(current) if not isinstance(new_val, bool) else bool(current)
+
+            if new_val != current:
+                return True
+    return False
 
 # ============================
 # LOAD CONFIG
@@ -187,7 +197,10 @@ with tab1:
             )
             
             st.session_state.sup_buf[(store,i)] = int(new)
-
+            
+    if has_unsaved_changes(st.session_state.sup_buf, pivot):
+        st.warning("⚠️ You have unsaved changes")
+        
     if st.button("💾 Save Supplier Changes"):
         for (store,i),val in st.session_state.sup_buf.items():
             old = int(pivot.loc[store,i]) if store in pivot.index else 0
@@ -197,7 +210,9 @@ with tab1:
 
     last = get_last_update()
     if last:
-        t = datetime.fromisoformat(last["time"])
+        utc = datetime.fromisoformat(last["time"])
+        ph_tz = pytz.timezone("Asia/Manila")
+        t = utc.astimezone(ph_tz)
         st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================
@@ -235,6 +250,9 @@ with tab2:
 
             st.session_state.con_buf[(store,i)] = int(new)
 
+    if has_unsaved_changes(st.session_state.con_buf, pivot):
+        st.warning("⚠️ You have unsaved changes")
+    
     if st.button("💾 Save Consumption Changes"):
         for (store,i),val in st.session_state.con_buf.items():
             old = int(pivot.loc[store,i]) if store in pivot.index else 0
@@ -244,7 +262,9 @@ with tab2:
 
     last = get_last_update()
     if last:
-        t = datetime.fromisoformat(last["time"])
+        utc = datetime.fromisoformat(last["time"])
+        ph_tz = pytz.timezone("Asia/Manila")
+        t = utc.astimezone(ph_tz)
         st.info(f"🕒 Last updated by {last['store']} @ {t.strftime('%b %d %I:%M:%S %p')}")
 
 # ============================

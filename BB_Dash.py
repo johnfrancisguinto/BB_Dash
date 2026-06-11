@@ -200,12 +200,15 @@ with tab1:
             
     if has_unsaved_changes(st.session_state.sup_buf, pivot):
         st.warning("⚠️ You have unsaved changes")
-        
+
     if st.button("💾 Save Supplier Changes"):
-        for (store,i),val in st.session_state.sup_buf.items():
+        for (store,i), val in st.session_state.sup_buf.items():
             old = int(pivot.loc[store,i]) if store in pivot.index else 0
             update_supplier(store,i,val,old)
 
+        # ✅ CLEAR buffer after saving
+        st.session_state.sup_buf = {}
+    
         st.success("✅ Saved")
 
     last = get_last_update()
@@ -254,10 +257,13 @@ with tab2:
         st.warning("⚠️ You have unsaved changes")
     
     if st.button("💾 Save Consumption Changes"):
-        for (store,i),val in st.session_state.con_buf.items():
+        for (store,i), val in st.session_state.con_buf.items():
             old = int(pivot.loc[store,i]) if store in pivot.index else 0
             update_consumption(store,i,val,old)
-
+    
+        # ✅ CLEAR buffer
+        st.session_state.con_buf = {}
+    
         st.success("✅ Saved")
 
     last = get_last_update()

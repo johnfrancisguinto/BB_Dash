@@ -39,23 +39,36 @@ ITEM_LABELS = get_config("items", ["Item1", "Item2"])
 # ============================
 
 def sync_db():
+    # switches
+    existing = supabase.table("switches").select("store,supplier").execute()
+    existing_pairs = {(row["store"], row["supplier"]) for row in existing.data}
+
     for store in STORES:
         for i in range(len(SUPPLIER_LABELS)):
-            supabase.table("switches").upsert({
-                "store": store,
-                "supplier": i,
-                "state": 0
-            }).execute()
+            if (store, i) not in existing_pairs:
+                supabase.table("switches").insert({
+                    "store": store,
+                    "supplier": i,
+                    "state": 0
+                }).execute()
 
+    # consumption
+    existing = supabase.table("consumption").select("store,item").execute()
+    existing_pairs = {(row["store"], row["item"]) for row in existing.data}
+
+    for store in STORES:
         for i in range(len(ITEM_LABELS)):
-            supabase.table("consumption").upsert({
-                "store": store,
-                "item": i,
-                "percent": 0
-            }).execute()
+            if (store, i) not in existing_pairs:
+                supabase.table("consumption").insert({
+                    "store": store,
+                    "item": i,
+                    "percent": 0
+                }).execute()
 
-sync_db()
-
+if "initialized" not in st.session_state:
+    sync_db()
+    st.session_state.initialized = True
+    
 # ============================
 # DATA FUNCTIONS
 # ============================

@@ -125,7 +125,7 @@ st.set_page_config(layout="wide")
 st.title("🟠 BB Dashboard")
 
 tab1, tab2, tab3, tab4 = st.tabs(
-    ["🏭 Suppliers","📦 Consumption","⚙️ Admin","📜 Activity"]
+    ["🏭 Suppliers","📦 Consumption","📜 Activity","⚙️ Admin"]
 )
 
 # ============================
